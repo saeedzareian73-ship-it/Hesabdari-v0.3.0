@@ -162,7 +162,7 @@
       </div></div>
       <div class="card"><div class="page-head" style="margin:0 0 5px"><h3 class="card-title" style="margin:0">آخرین فعالیت‌ها</h3><button class="text-link" data-action="go-invoices">مشاهده فاکتورها</button></div>
       ${recent.length?`<div class="list">${recent.map(x=>`<div class="list-row"><div class="row-main"><div class="row-title">${escapeHtml(x.title)}</div><div class="row-sub">${escapeHtml(x.sub)} · ${dateFa(x.date)}</div></div><div class="row-end"><div class="amount">${money(x.amount,ws)}</div>${badge(x.type==='invoice'?'فروش':'دریافت',x.type==='invoice'?'orange-pill':'green-pill')}</div></div>`).join('')}</div>`:emptyBox('▤','هنوز فعالیتی ثبت نشده','برای شروع، یک مشتری و سپس فاکتور فروش ثبت کنید.')}</div>
-      <div class="card"><h3 class="card-title">یادآوری</h3><div class="notice">اطلاعات این نسخه فقط روی همین گوشی و در حافظه مرورگر ذخیره می‌شود. از بخش «بیشتر ← پشتیبان و خروجی» مرتباً فایل پشتیبان تهیه کنید.</div></div>`;
+      <div class="card"><h3 class="card-title">یادآوری</h3><div class="notice">اطلاعات ابتدا در حافظه محلی همین مرورگر ذخیره می‌شود و در صورت فعال بودن مجوز ابری، با Firebase همگام خواهد شد. برای اطمینان، از بخش «بیشتر ← پشتیبان و خروجی» نیز مرتباً فایل پشتیبان تهیه کنید.</div></div>`;
   }
 
   function renderCustomers(){
@@ -487,7 +487,8 @@
     if(cloudStatus==='checking')return 'در حال بررسی اطلاعات فضای ابری…';
     if(cloudStatus==='syncing')return 'در حال همگام‌سازی اطلاعات…';
     if(cloudStatus==='synced')return 'اطلاعات با فضای ابری همگام است.';
-    if(cloudStatus==='not-authorized')return 'این حساب هنوز توسط مدیر برنامه مجاز نشده است. شناسه کاربری را برای مدیر ارسال کنید.';
+    if(cloudStatus==='not-authorized')return 'ورود به حساب موفق است، اما این UID هنوز مجوز همگام‌سازی ابری ندارد. در Firestore و مجموعه access باید سندی با شناسه دقیق UID و فیلد enabled از نوع Boolean با مقدار true وجود داشته باشد.';
+    if(cloudStatus==='rules-error')return 'حساب شناسایی شد، اما قوانین امنیتی Firestore اجازه بررسی یا دسترسی به اطلاعات را نمی‌دهند. بخش Rules را با فایل firebase.rules تطبیق دهید.';
     if(cloudStatus==='offline')return 'اتصال اینترنت در دسترس نیست؛ اطلاعات فعلاً روی همین دستگاه ذخیره می‌شود.';
     if(cloudStatus==='error')return 'همگام‌سازی انجام نشد. اطلاعات محلی دست‌نخورده باقی مانده است.';
     return 'وضعیت اتصال فضای ابری نامشخص است.';
@@ -529,7 +530,15 @@
         else {suppressCloudSync=true;try{data._meta={...(data._meta||{}),lastSyncedCloudUpdatedAt:remoteUpdated};await dbSave({touch:false,queue:false});}finally{suppressCloudSync=false;}cloudStatus='synced';}
       }
       cloudSyncReady=true;
-    }catch(err){console.error('Cloud sync error:',err);cloudStatus=err?.code==='permission-denied'?'not-authorized':'error';if(page==='backup')render();}
+    }catch(err){
+      console.error('Cloud sync error:',err);
+      const code=String(err?.code||'');
+      if(code==='permission-denied')cloudStatus='rules-error';
+      else if(code==='access-denied')cloudStatus='not-authorized';
+      else if(!navigator.onLine||['unavailable','deadline-exceeded','network-request-failed'].includes(code))cloudStatus='offline';
+      else cloudStatus='error';
+      if(page==='backup')render();
+    }
     finally{cloudSyncBusy=false;if(page==='backup')render();}
   }
   function scheduleCloudSync(){if(!cloudSyncReady||!cloudUser||suppressCloudSync)return;clearTimeout(cloudSyncTimer);cloudSyncTimer=setTimeout(()=>syncWithCloud({automatic:true}),1200);}
