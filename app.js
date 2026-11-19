@@ -5,6 +5,7 @@
   const DB_NAME = 'daftar-hesab-db';
   const LEGACY_MIGRATION_KEY = 'dh.legacy-data-migrated';
   const AUTH_CACHE_KEY = 'dh.last-authorized-uid';
+  const LOGOUT_SIGNAL_KEY = 'dh.cross-tab-logout';
   const DB_VERSION = 1;
   const STORE_NAME = 'app';
   const DEFAULT_CATEGORIES = [
@@ -67,7 +68,8 @@
 
   let db, data, page='dashboard', selectedCustomerId=null, currentSearch='', reportStart='', reportEnd='', modalMode=null;
   let pageStack=[], calendarState=null, cloudStatus='not-configured', cloudUser=null, cloudSyncReady=false, cloudSyncBusy=false, cloudSyncTimer=null, suppressCloudSync=false;
-  let accessGranted=false, accessUid=null, offlineSession=false, authReady=false, manualLoginInProgress=false, accessWatchUnsubscribe=null, authTransitionPromise=null, authTransitionUid=null, reconnectPromise=null, syncEpoch=0;
+  let accessGranted=false, accessUid=null, activeDatabaseUid=null, offlineSession=false, authReady=false, manualLoginInProgress=false, accessWatchUnsubscribe=null, authTransitionPromise=null, authTransitionUid=null, reconnectPromise=null, syncEpoch=0;
+  let lastSeenLogoutSignal='', logoutChannel=null;
 
   function openDb(name=DB_NAME){
     return new Promise((resolve,reject)=>{
@@ -77,15 +79,50 @@
     });
   }
   function dbGet(){ return new Promise((resolve,reject)=>{const tx=db.transaction(STORE_NAME,'readonly');const req=tx.objectStore(STORE_NAME).get('main');req.onsuccess=()=>resolve(req.result?.value || null);req.onerror=()=>reject(req.error);}); }
-  function dbSave(options={}){ const touch=options.touch!==false, queue=options.queue!==false; if(touch&&data&&!suppressCloudSync){data._meta={...(data._meta||{}),updatedAt:Date.now()};} return new Promise((resolve,reject)=>{const tx=db.transaction(STORE_NAME,'readwrite');tx.objectStore(STORE_NAME).put({key:'main',value:data});tx.oncomplete=()=>{resolve();if(queue&&!suppressCloudSync&&cloudSyncReady)scheduleCloudSync();};tx.onerror=()=>reject(tx.error);}); }
+  function dbSave(options={}){
+    if(activeDatabaseUid&&!options.allowSessionSetup&&!sessionAllowedForCurrentTab())return Promise.reject(new Error('نشست کاربر فعال نیست؛ ذخیره متوقف شد.'));
+    const touch=options.touch!==false, queue=options.queue!==false; if(touch&&data&&!suppressCloudSync){data._meta={...(data._meta||{}),updatedAt:Date.now()};} return new Promise((resolve,reject)=>{if(!db){reject(new Error('پایگاه داده فعال نیست.'));return;}const tx=db.transaction(STORE_NAME,'readwrite');tx.objectStore(STORE_NAME).put({key:'main',value:data});tx.oncomplete=()=>{resolve();if(queue&&!suppressCloudSync&&cloudSyncReady)scheduleCloudSync();};tx.onerror=()=>reject(tx.error);});
+  }
   function safeLocalGet(key){try{return localStorage.getItem(key)||'';}catch(_){return '';}}
   function safeLocalSet(key,value){try{localStorage.setItem(key,String(value));}catch(err){console.warn('Local session cache unavailable:',err);}}
   function safeLocalRemove(key){try{localStorage.removeItem(key);}catch(_){}}
+  function parseLogoutSignal(raw){try{return raw?JSON.parse(raw):null;}catch(_){return null;}}
+  function processLogoutSignal(raw){
+    if(!raw||raw===lastSeenLogoutSignal)return false;
+    lastSeenLogoutSignal=raw;
+    const signal=parseLogoutSignal(raw);
+    if(signal?.type==='logout'&&signal.uid&&signal.uid===accessUid){
+      const oldUid=signal.uid;
+      clearAuthorizedUid(oldUid);cloudUser=null;
+      lockApplication('signed-out',{clearCache:true,clearIdentity:true,uid:oldUid}).catch(err=>console.error('Cross-tab logout:',err));
+      return true;
+    }
+    return false;
+  }
+  function sessionAllowedForCurrentTab(){
+    if(!accessGranted||!accessUid||!data||!db||activeDatabaseUid!==accessUid)return false;
+    const raw=safeLocalGet(LOGOUT_SIGNAL_KEY);
+    if(raw&&raw!==lastSeenLogoutSignal&&processLogoutSignal(raw))return false;
+    if(!raw)lastSeenLogoutSignal='';
+    return accessGranted&&!!data&&!!db&&activeDatabaseUid===accessUid;
+  }
+  function publishCrossTabLogout(uid){
+    if(!uid)return;
+    const raw=JSON.stringify({type:'logout',uid,at:Date.now(),nonce:id()});
+    lastSeenLogoutSignal=raw;safeLocalSet(LOGOUT_SIGNAL_KEY,raw);
+    try{logoutChannel?.postMessage(raw);}catch(err){console.warn('BroadcastChannel logout:',err);}
+  }
+  function initializeCrossTabLogout(){
+    lastSeenLogoutSignal=safeLocalGet(LOGOUT_SIGNAL_KEY);
+    try{if('BroadcastChannel' in window){logoutChannel=new BroadcastChannel('daftar-hesab-auth');logoutChannel.onmessage=e=>processLogoutSignal(e.data);}}catch(err){console.warn('BroadcastChannel unavailable:',err);}
+    window.addEventListener('storage',e=>{if(e.key===LOGOUT_SIGNAL_KEY&&e.newValue)processLogoutSignal(e.newValue);});
+  }
   function userDbName(uid){return `${DB_NAME}-${String(uid).replace(/[^a-zA-Z0-9_-]/g,'_')}`;}
   function readMainFrom(database){return new Promise((resolve,reject)=>{const tx=database.transaction(STORE_NAME,'readonly'),req=tx.objectStore(STORE_NAME).get('main');req.onsuccess=()=>resolve(req.result?.value||null);req.onerror=()=>reject(req.error);});}
   async function openUserDatabase(uid){
     const requestEpoch=syncEpoch, databaseName=userDbName(uid);
     if(db){try{db.close();}catch(_){}db=null;}
+    activeDatabaseUid=null;
     const targetDb=await openDb(databaseName);
     const stillCurrent=()=>syncEpoch===requestEpoch&&accessUid===uid;
     if(!stillCurrent()){targetDb.close();return false;}
@@ -115,8 +152,9 @@
     data.workspaces=data.workspaces.map(cleanWorkspace);
     if(!data.workspaces.some(w=>w.id===data.activeWorkspaceId))data.activeWorkspaceId=data.workspaces[0].id;
     data._meta={...(data._meta||{}),updatedAt:Number(data._meta?.updatedAt||Date.now()),lastSyncedCloudUpdatedAt:data._meta?.lastSyncedCloudUpdatedAt||null};
-    try{await dbSave({touch:false,queue:false});}catch(err){if(!stillCurrent()||db!==targetDb)return false;throw err;}
+    try{await dbSave({touch:false,queue:false,allowSessionSetup:true});}catch(err){if(!stillCurrent()||db!==targetDb)return false;throw err;}
     if(!stillCurrent()||db!==targetDb)return false;
+    activeDatabaseUid=uid;
     if(markLegacyMigration&&!safeLocalGet(LEGACY_MIGRATION_KEY))safeLocalSet(LEGACY_MIGRATION_KEY,uid);
     return true;
   }
@@ -127,7 +165,7 @@
     const gate=$('#access-gate'),content=$('#access-gate-content'),uid=opts.uid||cloudUser?.uid||accessUid||'';
     let title='ورود به دفتر حساب',message='برای استفاده از برنامه، با حساب Google یا GitHub خود وارد شوید. پس از تأیید مدیر برنامه، امکان استفاده از بخش‌های حسابداری و همگام‌سازی فعال می‌شود.';
     if(mode==='not-authorized'){title='دسترسی هنوز فعال نشده';message='ورود حساب موفق بوده، اما مدیر برنامه هنوز دسترسی این شناسه را فعال نکرده است. شناسه زیر را برای مدیر ارسال کنید. پس از فعال‌سازی، «بررسی دوباره» را بزنید.';}
-    else if(mode==='revoked'){title='دسترسی برنامه غیرفعال شده';message='مجوز این حساب توسط مدیر برنامه لغو شده است. اطلاعات محلی حذف نشده‌اند، اما تا زمان فعال‌سازی دوباره، ورود به محیط برنامه و بازیابی فایل پشتیبان امکان‌پذیر نیست.';}
+    else if(mode==='revoked'){title='دسترسی برنامه غیرفعال شده';message='این حساب مجوز ورود ندارد . اطلاعات محلی حذف نشده‌اند، اما تا زمان فعال‌سازی دوباره، ورود به محیط برنامه و بازیابی فایل پشتیبان امکان‌پذیر نیست.';}
     else if(mode==='network'){title='اتصال به سرویس ورود برقرار نشد';message=opts.message||'ارتباط با سرویس احراز هویت گوگل/Firebase برقرار نشد. اتصال اینترنت، VPN یا DNS دستگاه را بررسی کنید و دوباره تلاش کنید.';}
     else if(mode==='rules-error'){title='خطا در قوانین دسترسی Firebase';message='درخواست بررسی مجوز به Firestore رسید، اما قوانین امنیتی اجازه خواندن سند access را ندادند. فایل firestore.rules را در بخش Rules منتشر کنید.';}
     else if(mode==='config'){title='تنظیمات فضای ابری ناقص است';message='برای قفل و تأیید کاربران، فایل firebase-config.js باید با تنظیمات پروژه Firebase تکمیل شده باشد.';}
@@ -137,14 +175,14 @@
     const retry=mode==='not-authorized'||mode==='rules-error'?`<button class="btn full" data-action="gate-retry">بررسی دوباره مجوز</button>`:'';
     const networkTest=mode==='network'?`<button class="btn outline full" data-action="gate-test-network">آزمایش اتصال به سرویس‌های ورود</button><div id="gate-network-results" class="tiny muted" style="text-align:right"></div>`:'';
     const signout=(cloudUser||uid)?`<button class="btn outline full" data-action="gate-signout">خروج و انتخاب حساب دیگر</button>`:'';
-    content.innerHTML=`<div class="access-gate-mark">د</div><h1 class="access-gate-title">${title}</h1><p class="access-gate-subtitle">مدیریت فروش، حساب مشتریان و انبار</p><div class="access-gate-message">${escapeHtml(message)}</div>${uidHtml}<div class="access-gate-actions">${retry}${networkTest}<button class="btn full" data-action="gate-login-google">ورود با Google</button><button class="btn secondary full" data-action="gate-login-github">ورود با GitHub</button>${signout}</div><div class="access-gate-contact">توسعه‌دهنده: سعید · پشتیبانی: <a href="https://t.me/Saeedzaran" target="_blank" rel="noopener">@Saeedzaran</a></div>`;
+    content.innerHTML=`<div class="access-gate-mark">د</div><h1 class="access-gate-title">${title}</h1><p class="access-gate-subtitle">مدیریت فروش، حساب مشتریان و انبار</p><div class="access-gate-message">${escapeHtml(message)}</div>${uidHtml}<div class="access-gate-actions">${retry}${networkTest}<button class="btn full" data-action="gate-login-google">ورود با Google</button><button class="btn secondary full" data-action="gate-login-github">ورود با GitHub</button>${signout}</div><div class="access-gate-contact">توسعه‌دهنده: سعید · پشتیبانی: <a href="https://t.me/SS73_z" target="_blank" rel="noopener">@SS73_z</a></div>`;
     $('#app').hidden=true;gate.hidden=false;
   }
-  function showAuthorizedApp(){accessGranted=true;$('#access-gate').hidden=true;$('#app').hidden=false;render();}
+  function showAuthorizedApp(){if(!accessUid||activeDatabaseUid!==accessUid||!data||!db)return;accessGranted=true;$('#access-gate').hidden=true;$('#app').hidden=false;render();}
   function isNetworkError(err){const code=String(err?.code||'');const msg=String(err?.message||'').toLowerCase();return !navigator.onLine||['auth/network-request-failed','unavailable','deadline-exceeded','network-request-failed'].includes(code)||msg.includes('failed to fetch')||msg.includes('networkerror')||msg.includes('load failed');}
   function authErrorMessage(err){
     const code=String(err?.code||'');
-    if(code==='auth/network-request-failed'||isNetworkError(err))return 'درخواست ورود به سرویس‌های Google/Firebase نرسید یا در مسیر قطع شد. این خطا معمولاً با DNS داخل کد حل نمی‌شود. دامنه‌های identitytoolkit.googleapis.com، securetoken.googleapis.com، accounts.google.com و www.gstatic.com باید از شبکه قابل دسترسی باشند. VPN یا DNS امن/مسیر اینترنت را بررسی کنید.';
+    if(code==='auth/network-request-failed'||isNetworkError(err)){const authHost=window.DH_FIREBASE_CONFIG?.authDomain||'دامنه Auth پروژه';return `درخواست ورود به سرویس‌های Google/Firebase نرسید یا در مسیر قطع شد. علاوه بر سرویس‌های identitytoolkit.googleapis.com، securetoken.googleapis.com، accounts.google.com و www.gstatic.com، دامنه ${authHost} و مسیر /__/auth/handler نیز باید از شبکه قابل دسترسی باشند. این خطا با افزودن DNS داخل کد حل نمی‌شود؛ VPN یا مسیر اینترنت را بررسی کنید و در صورت مسدود بودن authDomain، راهنمای تغییر دامنه ورود را ببینید.`;}
     if(code==='auth/unauthorized-domain')return 'دامنه فعلی برنامه در Firebase Authentication مجاز نشده است. دامنه میزبان را در Authentication ← Settings ← Authorized domains اضافه کنید.';
     if(code==='auth/popup-blocked'||code==='auth/popup-closed-by-user')return 'پنجره ورود گوگل بسته یا مسدود شد. اجازه بازشدن پنجره‌های ورود را در مرورگر فعال کنید و دوباره تلاش کنید.';
     return err?.message||'خطای نامشخص در ورود رخ داد.';
@@ -163,7 +201,7 @@
     if(opts.clearCache)clearAuthorizedUid(opts.uid||accessUid||cloudUser?.uid||'');
     // مودال‌ها بیرون از #app هستند؛ هنگام لغو مجوز باید آن‌ها هم فوراً بسته شوند.
     $('#modal-root').innerHTML='';$('#toast-root').innerHTML='';closeJalaliCalendar();
-    if(db){try{db.close();}catch(_){}}db=null;data=null;page='dashboard';pageStack=[];
+    if(db){try{db.close();}catch(_){}}db=null;activeDatabaseUid=null;data=null;page='dashboard';pageStack=[];
     if(opts.clearIdentity)accessUid=null;else if(opts.uid)accessUid=opts.uid;
     showAccessGate(mode,{uid:opts.clearIdentity?'':(opts.uid||cloudUser?.uid||accessUid||''),message:opts.message});
   }
@@ -173,13 +211,15 @@
       if(authTransitionUid===user.uid)return authTransitionPromise;
       try{await authTransitionPromise;}catch(_){}
     }
-    const attemptEpoch=syncEpoch;
+    const attemptEpoch=syncEpoch, logoutMarkerAtStart=safeLocalGet(LOGOUT_SIGNAL_KEY);
     const operation=(async()=>{
       cloudUser=user;accessUid=user.uid;
       try{
         const allowed=await window.DHCloud.checkAccess();
         if(attemptEpoch!==syncEpoch||accessUid!==user.uid||window.DHCloud.currentUser()?.uid!==user.uid)return false;
+        if(safeLocalGet(LOGOUT_SIGNAL_KEY)!==logoutMarkerAtStart){await lockApplication('signed-out',{clearCache:true,clearIdentity:true,uid:user.uid});return false;}
         if(!allowed){await stopAccessWatch();await lockApplication('not-authorized',{clearCache:true,uid:user.uid});cloudUser=user;accessUid=user.uid;startAccessWatch(user.uid);return false;}
+        lastSeenLogoutSignal=safeLocalGet(LOGOUT_SIGNAL_KEY);
         cacheAuthorizedUid(user.uid);
         const opened=await openUserDatabase(user.uid);
         if(!opened||attemptEpoch!==syncEpoch||accessUid!==user.uid)return false;
@@ -257,9 +297,9 @@
     if(!result.nextInvoiceNumber) result.nextInvoiceNumber=result.invoices.length+1;
     return result;
   }
-  function saveAndRender(){ const epoch=syncEpoch;dbSave().then(()=>{if(epoch===syncEpoch&&accessGranted&&data)render();}).catch(err=>{console.error(err);if(accessGranted)toast('ذخیره اطلاعات با خطا روبه‌رو شد. از اطلاعات پشتیبان بگیرید.');}); }
+  function saveAndRender(){ if(!sessionAllowedForCurrentTab()){toast('نشست فعال نیست؛ برای ادامه دوباره وارد شوید.');return;}const epoch=syncEpoch;dbSave().then(()=>{if(epoch===syncEpoch&&sessionAllowedForCurrentTab())render();}).catch(err=>{console.error(err);if(accessGranted)toast('ذخیره اطلاعات با خطا روبه‌رو شد. از اطلاعات پشتیبان بگیرید.');}); }
   function toast(message){ const root=$('#toast-root');root.innerHTML=`<div class="toast">${escapeHtml(message)}</div>`;setTimeout(()=>root.innerHTML='',2600); }
-  function setPage(next,opts={}){ if(next!==page&&!opts.fromPop){pageStack.push({page,selectedCustomerId});try{history.pushState({dhPage:true},'',`#${next}`);}catch(_){}} page=next;currentSearch='';render();window.scrollTo({top:0,behavior:'smooth'}); }
+  function setPage(next,opts={}){ if(!sessionAllowedForCurrentTab())return; if(next!==page&&!opts.fromPop){pageStack.push({page,selectedCustomerId});try{history.pushState({dhPage:true},'',`#${next}`);}catch(_){}} page=next;currentSearch='';render();window.scrollTo({top:0,behavior:'smooth'}); }
   function goBack(){ if(calendarState){closeJalaliCalendar();return;} if($('#modal-root').innerHTML.trim()){closeModal();return;} if(pageStack.length&&history.state?.dhPage){history.back();return;} if(pageStack.length){const prev=pageStack.pop();page=prev.page;selectedCustomerId=prev.selectedCustomerId;render();return;} if(page!=='dashboard'){page='dashboard';selectedCustomerId=null;render();return;} toast('در صفحه اصلی هستید.'); }
   window.addEventListener('popstate',()=>{if($('#modal-root').innerHTML.trim()){closeModal();return;}if(pageStack.length){const prev=pageStack.pop();page=prev.page;selectedCustomerId=prev.selectedCustomerId;}else{page='dashboard';selectedCustomerId=null;}render();});
   function customerById(customerId){return activeWs().customers.find(c=>c.id===customerId);}
@@ -435,7 +475,7 @@
     <button class="quick-tile" data-action="go-reports"><span class="quick-icon">▥</span><span><b>گزارش‌ها</b><small>فروش، طلب و هزینه</small></span></button>
     <button class="quick-tile" data-action="go-settings"><span class="quick-icon">⚙</span><span><b>تنظیمات</b><small>کسب‌وکار و واحد پول</small></span></button>
     <button class="quick-tile" data-action="go-backup"><span class="quick-icon">⇧</span><span><b>پشتیبان و خروجی</b><small>Excel و فایل بازیابی</small></span></button>
-    </div><div class="card" style="margin-top:13px"><h3 class="card-title">درباره برنامه</h3><p class="small">این برنامه با هدف ساده‌تر کردن حسابداری برای کسب‌وکارهای کوچک و متوسط طراحی و توسعه داده شده است. من سعید ، توسعه‌دهنده مستقل، تلاش کرده‌ام تجربه‌ای ساده، سریع و کاربردی بسازم. نظرات و پیشنهادهای شما به بهبود برنامه کمک می‌کند.</p><div class="small"><b>📩 برای ارتباط و ارسال بازخورد:</b><br>آیدی تلگرام: <a href="https://t.me/Saeedzaran" target="_blank" rel="noopener">Saeedzaran</a></div></div>`;}
+    </div><div class="card logout-card"><h3 class="card-title">حساب کاربری</h3><p class="small muted">برای پایان دادن به نشست این حساب در این مرورگر، از دکمه زیر استفاده کنید.</p><button class="btn danger full logout-large" data-action="cloud-signout"><span aria-hidden="true">↪</span> خروج از حساب</button></div><div class="card" style="margin-top:13px"><h3 class="card-title">درباره برنامه</h3><p class="small">این برنامه با هدف ساده‌تر کردن حسابداری برای کسب‌وکارهای کوچک و متوسط طراحی و توسعه داده شده است. من سعید ، توسعه‌دهنده مستقل، تلاش کرده‌ام تجربه‌ای ساده، سریع و کاربردی بسازم. نظرات و پیشنهادهای شما به بهبود برنامه کمک می‌کند.</p><div class="small"><b>📩 برای ارتباط و ارسال بازخورد:</b><br>آیدی تلگرام: <a href="https://t.me/SS73_z" target="_blank" rel="noopener">SS73_z</a></div></div>`;}
 
   function renderSettings(){const ws=activeWs();return `${pageHead('تنظیمات','اطلاعات پایه کسب‌وکار')}<div class="card"><h3 class="card-title">کسب‌وکار فعال</h3><div class="field"><label>نام کسب‌وکار</label><input id="ws-name" value="${escapeHtml(ws.name)}"></div><div class="field"><label>واحد پول</label><select id="ws-currency">${['تومان','ریال','افغانی','دلار','یورو','لیر','منات','سایر'].map(x=>`<option ${ws.currency===x?'selected':''}>${x}</option>`).join('')}</select></div><button class="btn full" data-action="save-settings">ذخیره تنظیمات</button></div>
       <div class="card"><div class="setting-row"><div><b>دسته‌بندی کالاها</b><div class="row-sub">افزودن شاخه و زیرشاخه دلخواه</div></div><button class="btn secondary small-btn" data-action="manage-categories">مدیریت</button></div><div class="setting-row"><div><b>کسب‌وکارهای من</b><div class="row-sub">هر کسب‌وکار اطلاعات مستقل دارد</div></div><button class="btn secondary small-btn" data-action="switch-workspace">مشاهده</button></div><div class="setting-row"><div><b>ساخت کسب‌وکار جدید</b><div class="row-sub">برای فعالیت یا فروشگاه دیگر</div></div><button class="btn small-btn" data-action="add-workspace">＋ افزودن</button></div><div class="setting-row"><div><b>اجازه فروش با موجودی منفی</b><div class="row-sub">در حالت خاموش، فروش بیشتر از موجودی ثبت نمی‌شود.</div></div><input id="allow-negative-stock" type="checkbox" ${ws.allowNegativeStock?'checked':''}></div></div>
@@ -447,6 +487,7 @@
     <div class="card"><h3 class="card-title">انتقال به گوشی دیگر</h3><ol class="small muted" style="padding-right:20px;margin-bottom:0"><li>در گوشی فعلی فایل پشتیبان را دریافت کنید.</li><li>فایل را به گوشی جدید منتقل کنید.</li><li>برنامه را در گوشی جدید باز کنید و «بازیابی پشتیبان» را بزنید.</li></ol></div>`;}
 
   function render(){
+    if(!sessionAllowedForCurrentTab()){ $('#app').hidden=true; return; }
     const ws=activeWs(); $('#workspace-caption').textContent=ws?.name||'مدیریت فروش و حساب مشتریان';
     $$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.page===page||(page==='customer-detail'&&b.dataset.page==='customers')||(['products','inventory','expenses','reports','settings','backup'].includes(page)&&b.dataset.page==='more')));
     if(page==='backup'){$('#main').innerHTML=renderBackup();return;}
@@ -562,8 +603,8 @@
   function printInvoice(){const el=$('#print-invoice');if(!el)return;const w=window.open('','_blank','width=800,height=900');if(!w){toast('اجازه بازشدن پنجره چاپ داده نشد.');return;}w.document.write(`<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><title>چاپ فاکتور</title><style>body{font-family:Tahoma,Arial;padding:25px;color:#172521;line-height:1.8}table{border-collapse:collapse;width:100%;font-size:12px}td,th{border:1px solid #ddd;padding:8px;text-align:right}h2{font-size:20px}.list-row{display:flex;justify-content:space-between;border-bottom:1px solid #ddd;padding:5px 0}.small{font-size:11px}</style></head><body>${el.innerHTML}</body></html>`);w.document.close();w.focus();setTimeout(()=>w.print(),300);}
 
   function fileDownload(filename,blob){const a=document.createElement('a');const url=URL.createObjectURL(blob);a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);}
-  function downloadBackup(){if(!accessGranted||!data||!accessUid){toast('برای تهیه پشتیبان باید دسترسی برنامه فعال باشد.');return;}const payload={app:'daftar-hesab',version:3,ownerUid:accessUid,exportedAt:new Date().toISOString(),data};fileDownload(`daftar-hesab-backup-${today()}.json`,new Blob([JSON.stringify(payload,null,2)],{type:'application/json;charset=utf-8'}));toast('فایل پشتیبان آماده شد.');}
-  async function restoreBackup(file){try{if(!accessGranted||!db||!accessUid){toast('برای بازیابی پشتیبان باید دسترسی برنامه فعال باشد.');return;}const ownerAtStart=accessUid,text=await file.text(),parsed=JSON.parse(text);if(!accessGranted||accessUid!==ownerAtStart){toast('دسترسی برنامه تغییر کرده است؛ بازیابی انجام نشد.');return;}if(parsed.ownerUid&&parsed.ownerUid!==accessUid){toast('این فایل پشتیبان متعلق به حساب کاربری دیگری است و در این حساب بازیابی نمی‌شود.');return;}const incoming=parsed.data||parsed;if(!Array.isArray(incoming.workspaces)||!incoming.workspaces.length)throw new Error('ساختار فایل معتبر نیست');if(!confirm('اطلاعات فعلی با محتوای فایل پشتیبان جایگزین شود؟'))return;if(!accessGranted||accessUid!==ownerAtStart||!db){toast('دسترسی برنامه تغییر کرده است؛ بازیابی انجام نشد.');return;}data={activeWorkspaceId:incoming.activeWorkspaceId,workspaces:incoming.workspaces.map(cleanWorkspace)};if(!data.workspaces.some(w=>w.id===data.activeWorkspaceId))data.activeWorkspaceId=data.workspaces[0].id;await dbSave();if(!accessGranted||accessUid!==ownerAtStart||!data)return;page='dashboard';render();toast('بازیابی اطلاعات با موفقیت انجام شد.');}catch(err){console.error(err);toast('فایل پشتیبان معتبر نیست یا قابل خواندن نیست.');}}
+  function downloadBackup(){if(!sessionAllowedForCurrentTab()){toast('برای تهیه پشتیبان باید دسترسی برنامه فعال باشد.');return;}const payload={app:'daftar-hesab',version:3,ownerUid:accessUid,exportedAt:new Date().toISOString(),data};fileDownload(`daftar-hesab-backup-${today()}.json`,new Blob([JSON.stringify(payload,null,2)],{type:'application/json;charset=utf-8'}));toast('فایل پشتیبان آماده شد.');}
+  async function restoreBackup(file){try{if(!sessionAllowedForCurrentTab()){toast('برای بازیابی پشتیبان باید دسترسی برنامه فعال باشد.');return;}const ownerAtStart=accessUid,text=await file.text(),parsed=JSON.parse(text);if(!sessionAllowedForCurrentTab()||accessUid!==ownerAtStart){toast('دسترسی برنامه تغییر کرده است؛ بازیابی انجام نشد.');return;}if(parsed.ownerUid&&parsed.ownerUid!==accessUid){toast('این فایل پشتیبان متعلق به حساب کاربری دیگری است و در این حساب بازیابی نمی‌شود.');return;}const incoming=parsed.data||parsed;if(!Array.isArray(incoming.workspaces)||!incoming.workspaces.length)throw new Error('ساختار فایل معتبر نیست');if(!confirm('اطلاعات فعلی با محتوای فایل پشتیبان جایگزین شود؟'))return;if(!sessionAllowedForCurrentTab()||accessUid!==ownerAtStart||!db){toast('دسترسی برنامه تغییر کرده است؛ بازیابی انجام نشد.');return;}data={activeWorkspaceId:incoming.activeWorkspaceId,workspaces:incoming.workspaces.map(cleanWorkspace)};if(!data.workspaces.some(w=>w.id===data.activeWorkspaceId))data.activeWorkspaceId=data.workspaces[0].id;await dbSave();if(!sessionAllowedForCurrentTab()||accessUid!==ownerAtStart||!data)return;page='dashboard';render();toast('بازیابی اطلاعات با موفقیت انجام شد.');}catch(err){console.error(err);toast('فایل پشتیبان معتبر نیست یا قابل خواندن نیست.');}}
 
   function xlsxEscape(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'');}
   function colName(n){let s='';while(n>0){let r=(n-1)%26;s=String.fromCharCode(65+r)+s;n=Math.floor((n-1)/26);}return s;}
@@ -665,7 +706,15 @@
       ['Google APIs','https://www.googleapis.com/'],
       ['Firebase SDK','https://www.gstatic.com/'],
       ['Cloud Firestore','https://firestore.googleapis.com/'],
-      ...(authHost? [['Firebase Auth Domain',`https://${authHost}/`]]:[])
+      ...(authHost? [
+        ['Firebase Auth Domain',`https://${authHost}/`],
+        ['Firebase Auth helper (iframe)',`https://${authHost}/__/auth/iframe`],
+        ['Firebase OAuth handler',`https://${authHost}/__/auth/handler`]
+      ]:[]),
+      ...(window.DH_FIREBASE_CONFIG?.projectId?[
+        ['Firebase Hosting جایگزین (web.app)',`https://${window.DH_FIREBASE_CONFIG.projectId}.web.app/`],
+        ['Auth helper جایگزین (web.app)',`https://${window.DH_FIREBASE_CONFIG.projectId}.web.app/__/auth/iframe`]
+      ]:[])
     ];
     const results=await Promise.all(targets.map(async([name,url])=>{
       const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),6500);
@@ -673,7 +722,7 @@
       catch(_){return {name,ok:false};}finally{clearTimeout(timer);}
     }));
     if(!$('#gate-network-results'))return;
-    box.innerHTML=results.map(r=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #edf1ee"><span>${escapeHtml(r.name)}</span><b style="color:${r.ok?'#16834c':'#b84141'}">${r.ok?'قابل دسترسی':'عدم دسترسی'}</b></div>`).join('')+'<p>این آزمون فقط دسترسی شبکه را بررسی می‌کند و جایگزین تأیید ورود Firebase نیست.</p>';
+    box.innerHTML=results.map(r=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #edf1ee"><span>${escapeHtml(r.name)}</span><b style="color:${r.ok?'#16834c':'#b84141'}">${r.ok?'قابل دسترسی':'عدم دسترسی'}</b></div>`).join('')+'<p>اگر دامنه Auth فعلی در دسترس نیست اما دامنه web.app قابل دسترسی است، می‌توان برنامه را روی Firebase Hosting منتشر کرد و پس از تنظیم دامنه و OAuth، authDomain را به web.app تغییر داد. این تغییر به‌تنهایی و بدون تنظیمات Firebase Console کافی نیست.</p><p>این آزمون فقط دسترسی شبکه را بررسی می‌کند و جایگزین تأیید ورود Firebase نیست.</p>';
   }
   function cloudStatusText(){
     if(cloudStatus==='not-configured')return 'فضای ابری هنوز تنظیم نشده است. فایل تنظیمات Firebase باید تکمیل شود.';
@@ -780,9 +829,10 @@
     catch(err){showAccessGate('network',{uid:accessUid,message:authErrorMessage(err)});}
   }
   async function cloudLogout(){
-    const oldUid=accessUid;
+    const oldUid=accessUid||cloudUser?.uid||cachedAuthorizedUid();
     try{await window.DHCloud.signOut();}catch(err){if(!isNetworkError(err)){toast('خروج از حساب انجام نشد.');return;}console.warn('Firebase sign-out deferred while offline:',err);}
-    clearAuthorizedUid(oldUid);cloudUser=null;await lockApplication('signed-out',{clearCache:true,clearIdentity:true});toast('جلسه این دستگاه بسته شد. داده‌های محلی حذف نشده‌اند.');
+    publishCrossTabLogout(oldUid);
+    clearAuthorizedUid(oldUid);cloudUser=null;await lockApplication('signed-out',{clearCache:true,clearIdentity:true,uid:oldUid});toast('از حساب خارج شدید. داده‌های محلی حذف نشده‌اند.');
   }
 
   function parseDateOrNotify(value){try{return jalaliToIso(value);}catch(err){toast(err.message);return null;}}
@@ -807,7 +857,7 @@
 
 
   async function submitForm(form){
-    if(!accessGranted||!data||!db){toast('دسترسی برنامه فعال نیست؛ اطلاعات ذخیره نشد.');return;}
+    if(!sessionAllowedForCurrentTab()){toast('دسترسی برنامه فعال نیست؛ اطلاعات ذخیره نشد.');return;}
     const submitEpoch=syncEpoch,ws=activeWs(),fd=new FormData(form),v=Object.fromEntries(fd.entries());
     if(form.id==='customer-form'){
       const obj={id:modalMode.id||id(),name:v.name.trim(),kind:v.kind,phone:v.phone.trim(),address:v.address.trim(),openingBalance:num(v.openingBalance),openingType:v.openingType,notes:v.notes.trim(),createdAt:modalMode.id?(customerById(modalMode.id)?.createdAt||today()):today()};
@@ -854,7 +904,12 @@
   }
 
   function handleClick(event){
-    const actionEl=event.target.closest('[data-action]');if(actionEl){const action=actionEl.dataset.action;if(action==='activate-workspace'){data.activeWorkspaceId=actionEl.dataset.id;page='dashboard';closeModal();saveAndRender();return;}if(action==='edit-category'||action==='delete-category'){handleAction(action,actionEl);return;}handleAction(action,actionEl);return;}
+    const actionEl=event.target.closest('[data-action]');
+    const actionName=actionEl?.dataset.action||'';
+    const gateActions=['gate-login-google','gate-login-github','gate-retry','gate-test-network','gate-signout','gate-copy-uid'];
+    const insideProtectedUi=!!(event.target.closest('#app')||event.target.closest('#modal-root'));
+    if(insideProtectedUi&&!gateActions.includes(actionName)&&!sessionAllowedForCurrentTab()){event.preventDefault();event.stopImmediatePropagation();return;}
+    if(actionEl){const action=actionName;if(action==='activate-workspace'){data.activeWorkspaceId=actionEl.dataset.id;page='dashboard';closeModal();saveAndRender();return;}if(action==='edit-category'||action==='delete-category'){handleAction(action,actionEl);return;}handleAction(action,actionEl);return;}
     if(event.target.matches('[data-backdrop]'))closeModal();
     if(event.target.id==='jalali-calendar')closeJalaliCalendar();
   }
@@ -871,10 +926,10 @@
   function wsAvailableInvoices(customerId){return activeWs().invoices.filter(i=>i.customerId===customerId&&invoiceRemaining(i)>0);}
 
   document.addEventListener('click',handleClick);
-  document.addEventListener('submit',event=>{const f=event.target;if(f.matches('form')&&['customer-form','product-form','invoice-form','payment-form','expense-form','adjustment-form','workspace-form','category-form','stock-form'].includes(f.id)){event.preventDefault();submitForm(f).catch(err=>{console.error(err);toast('ذخیره اطلاعات با خطا روبه‌رو شد.');});}});
-  document.addEventListener('input',handleInput);
-  document.addEventListener('change',handleInput);
-  $('#back-page').addEventListener('click',goBack);
+  document.addEventListener('submit',event=>{const f=event.target;if(f.matches('form')&&['customer-form','product-form','invoice-form','payment-form','expense-form','adjustment-form','workspace-form','category-form','stock-form'].includes(f.id)){event.preventDefault();if(!sessionAllowedForCurrentTab()){toast('نشست این حساب پایان یافته است؛ عملیات ذخیره نشد.');return;}submitForm(f).catch(err=>{console.error(err);toast('ذخیره اطلاعات با خطا روبه‌رو شد.');});}});
+  document.addEventListener('input',event=>{if((event.target.closest('#app')||event.target.closest('#modal-root'))&&!sessionAllowedForCurrentTab())return;handleInput(event);});
+  document.addEventListener('change',event=>{if((event.target.closest('#app')||event.target.closest('#modal-root'))&&!sessionAllowedForCurrentTab())return;handleInput(event);});
+  $('#back-page').addEventListener('click',()=>{if(sessionAllowedForCurrentTab())goBack();});
   window.addEventListener('online',()=>{reconnectAndRevalidate();});
   window.addEventListener('focus',()=>{if(navigator.onLine&&accessUid)reconnectAndRevalidate();});
   window.addEventListener('pageshow',()=>{if(navigator.onLine&&accessUid)reconnectAndRevalidate();});
@@ -883,6 +938,7 @@
     if(!authReady)return;
     const next=event.detail?.user||null;
     if(!next){if(accessGranted||accessUid){const oldUid=accessUid;cloudUser=null;lockApplication('signed-out',{clearCache:true,clearIdentity:true,uid:oldUid}).catch(console.error);}return;}
+    if(!accessUid&&!accessGranted&&!manualLoginInProgress){cloudUser=next;authorizeCurrentUser(next,{startup:true}).catch(console.error);return;}
     if(accessUid&&next.uid!==accessUid&&!manualLoginInProgress){
       const oldUid=accessUid;clearAuthorizedUid(oldUid);cloudUser=next;
       lockApplication('login',{clearIdentity:true,uid:oldUid}).then(()=>{
@@ -891,10 +947,11 @@
       }).catch(console.error);
     }
   });
-  $$('.nav-item').forEach(b=>b.addEventListener('click',()=>setPage(b.dataset.page)));
-  $('#quick-add').addEventListener('click',()=>modal('ثبت سریع',`<div class="quick-grid"><button class="quick-tile" data-action="add-invoice"><span class="quick-icon">＋</span><b>فاکتور فروش</b></button><button class="quick-tile" data-action="add-payment"><span class="quick-icon">↙</span><b>دریافت وجه</b></button><button class="quick-tile" data-action="add-customer"><span class="quick-icon">♙</span><b>مشتری جدید</b></button><button class="quick-tile" data-action="add-expense"><span class="quick-icon">−</span><b>ثبت هزینه</b></button></div>`));
-  $('#restore-file').addEventListener('change',e=>{const f=e.target.files?.[0];if(f)restoreBackup(f);e.target.value='';});
+  $$('.nav-item').forEach(b=>b.addEventListener('click',()=>{if(sessionAllowedForCurrentTab())setPage(b.dataset.page);}));
+  $('#quick-add').addEventListener('click',()=>{if(!sessionAllowedForCurrentTab())return;modal('ثبت سریع',`<div class="quick-grid"><button class="quick-tile" data-action="add-invoice"><span class="quick-icon">＋</span><b>فاکتور فروش</b></button><button class="quick-tile" data-action="add-payment"><span class="quick-icon">↙</span><b>دریافت وجه</b></button><button class="quick-tile" data-action="add-customer"><span class="quick-icon">♙</span><b>مشتری جدید</b></button><button class="quick-tile" data-action="add-expense"><span class="quick-icon">−</span><b>ثبت هزینه</b></button></div>`);});
+  $('#restore-file').addEventListener('change',e=>{const f=e.target.files?.[0];if(f&&sessionAllowedForCurrentTab())restoreBackup(f);e.target.value='';});
 
+  initializeCrossTabLogout();
   async function init(){
     try{showAccessGate('login');await initializeCloudSync();}
     catch(err){console.error(err);showAccessGate('network',{message:'راه‌اندازی برنامه با خطا روبه‌رو شد. مرورگر را به‌روز کنید و دوباره تلاش کنید.'});}
