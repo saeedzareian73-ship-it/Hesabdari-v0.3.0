@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Each user can read their own activation status. Only the project owner
+    // changes this document in Firebase Console (client-side writes are denied).
+    match /access/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // All cloud data is isolated by Firebase Authentication UID and is available
+    // only while the administrator has enabled access/{uid}.enabled == true.
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null
+        && request.auth.uid == uid
+        && exists(/databases/$(database)/documents/access/$(uid))
+        && get(/databases/$(database)/documents/access/$(uid)).data.enabled == true;
+    }
+  }
+}
