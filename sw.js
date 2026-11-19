@@ -4,7 +4,7 @@
    در حالت آفلاین، نسخه قبلی ذخیره‌شده فقط به‌عنوان fallback استفاده می‌شود.
 */
 const CACHE_PREFIX = 'daftar-hesab-';
-const CACHE_NAME = 'daftar-hesab-v6';
+const CACHE_NAME = 'daftar-hesab-v7';
 const CORE_FILES = [
   './',
   './index.html',

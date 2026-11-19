@@ -173,16 +173,17 @@
     if(opts.message)message=opts.message;
     const uidHtml=uid?`<div class="access-gate-uid">UID: ${escapeHtml(uid)}</div><button class="btn outline full" data-action="gate-copy-uid">کپی شناسه کاربری</button>`:'';
     const retry=mode==='not-authorized'||mode==='rules-error'?`<button class="btn full" data-action="gate-retry">بررسی دوباره مجوز</button>`:'';
-    const networkTest=mode==='network'?`<button class="btn outline full" data-action="gate-test-network">آزمایش اتصال به سرویس‌های ورود</button><div id="gate-network-results" class="tiny muted" style="text-align:right"></div>`:'';
     const signout=(cloudUser||uid)?`<button class="btn outline full" data-action="gate-signout">خروج و انتخاب حساب دیگر</button>`:'';
-    content.innerHTML=`<div class="access-gate-mark">د</div><h1 class="access-gate-title">${title}</h1><p class="access-gate-subtitle">مدیریت فروش، حساب مشتریان و انبار</p><div class="access-gate-message">${escapeHtml(message)}</div>${uidHtml}<div class="access-gate-actions">${retry}${networkTest}<button class="btn full" data-action="gate-login-google">ورود با Google</button><button class="btn secondary full" data-action="gate-login-github">ورود با GitHub</button>${signout}</div><div class="access-gate-contact">توسعه‌دهنده: سعید · پشتیبانی: <a href="https://t.me/SS73_z" target="_blank" rel="noopener">@SS73_z</a></div>`;
+    const googleButtonLabel=mode==='network'?'تلاش دوباره با Google':'ورود با Google';
+    const retryHint=mode==='network'?'<p class="tiny muted" style="margin:8px 0 0;line-height:1.9">اگر ابتدا بدون VPN خطا گرفتید، VPN را روشن کنید و همین دکمه را دوباره بزنید؛ نیازی به تازه‌سازی صفحه یا بستن برنامه نیست.</p>':'';
+    content.innerHTML=`<div class="access-gate-mark">د</div><h1 class="access-gate-title">${title}</h1><p class="access-gate-subtitle">مدیریت فروش، حساب مشتریان و انبار</p><div class="access-gate-message">${escapeHtml(message)}</div>${uidHtml}<div class="access-gate-actions">${retry}<button class="btn full" data-action="gate-login-google">${googleButtonLabel}</button>${retryHint}<button class="btn secondary full" data-action="gate-login-github">ورود با GitHub</button>${signout}</div><div class="access-gate-contact">توسعه‌دهنده: سعید · پشتیبانی: <a href="https://t.me/SS73_z" target="_blank" rel="noopener">@SS73_z</a></div>`;
     $('#app').hidden=true;gate.hidden=false;
   }
   function showAuthorizedApp(){if(!accessUid||activeDatabaseUid!==accessUid||!data||!db)return;accessGranted=true;$('#access-gate').hidden=true;$('#app').hidden=false;render();}
   function isNetworkError(err){const code=String(err?.code||'');const msg=String(err?.message||'').toLowerCase();return !navigator.onLine||['auth/network-request-failed','unavailable','deadline-exceeded','network-request-failed'].includes(code)||msg.includes('failed to fetch')||msg.includes('networkerror')||msg.includes('load failed');}
   function authErrorMessage(err){
     const code=String(err?.code||'');
-    if(code==='auth/network-request-failed'||isNetworkError(err)){const authHost=window.DH_FIREBASE_CONFIG?.authDomain||'دامنه Auth پروژه';return `درخواست ورود به سرویس‌های Google/Firebase نرسید یا در مسیر قطع شد. علاوه بر سرویس‌های identitytoolkit.googleapis.com، securetoken.googleapis.com، accounts.google.com و www.gstatic.com، دامنه ${authHost} و مسیر /__/auth/handler نیز باید از شبکه قابل دسترسی باشند. این خطا با افزودن DNS داخل کد حل نمی‌شود؛ VPN یا مسیر اینترنت را بررسی کنید و در صورت مسدود بودن authDomain، راهنمای تغییر دامنه ورود را ببینید.`;}
+    if(code==='auth/network-request-failed'||isNetworkError(err))return 'درخواست ورود به سرویس‌های Google/Firebase نرسید یا در مسیر قطع شد. این خطا معمولاً با DNS داخل کد حل نمی‌شود. دامنه‌های identitytoolkit.googleapis.com، securetoken.googleapis.com، accounts.google.com و www.gstatic.com باید از شبکه قابل دسترسی باشند. VPN یا DNS امن/مسیر اینترنت را بررسی کنید.';
     if(code==='auth/unauthorized-domain')return 'دامنه فعلی برنامه در Firebase Authentication مجاز نشده است. دامنه میزبان را در Authentication ← Settings ← Authorized domains اضافه کنید.';
     if(code==='auth/popup-blocked'||code==='auth/popup-closed-by-user')return 'پنجره ورود گوگل بسته یا مسدود شد. اجازه بازشدن پنجره‌های ورود را در مرورگر فعال کنید و دوباره تلاش کنید.';
     return err?.message||'خطای نامشخص در ورود رخ داد.';
@@ -468,7 +469,16 @@
       <div class="footer-note">بازه گزارش: ${dateFa(start)} تا ${dateFa(end)}</div>`;
   }
 
-  function renderMore(){return `${pageHead('بخش‌های دیگر','مدیریت ابزارها و تنظیمات')}<div class="quick-grid">
+  function renderAccountSummary(){
+    const email=cloudUser?.email||'';
+    const name=cloudUser?.displayName||'';
+    const uidValue=cloudUser?.uid||accessUid||'';
+    const mainLabel=email||name||(uidValue?`شناسه ${uidValue}`:'حسابی شناسایی نشده است');
+    const providerLabel=offlineSession?'نشست محلیِ حساب تأییدشده':(email?'حساب واردشده':'حساب فعال');
+    return `<div class="card account-summary"><div class="account-summary-main"><span class="account-summary-icon" aria-hidden="true">♙</span><div class="account-summary-text"><b>حساب متصل به برنامه</b><div class="account-summary-email" dir="auto">${escapeHtml(mainLabel)}</div><small>${providerLabel}</small></div></div>${uidValue?`<div class="account-summary-uid" dir="ltr">UID: ${escapeHtml(uidValue)}</div>`:''}</div>`;
+  }
+
+  function renderMore(){return `${pageHead('بخش‌های دیگر','مدیریت ابزارها و تنظیمات')}${renderAccountSummary()}<div class="quick-grid">
     <button class="quick-tile" data-action="go-products"><span class="quick-icon">▦</span><span><b>کالاها و خدمات</b><small>تعریف کالا و دسته‌بندی</small></span></button>
     <button class="quick-tile" data-action="go-inventory"><span class="quick-icon">▤</span><span><b>موجودی انبار</b><small>ورود، خروج و موجودی قابل تبدیل</small></span></button>
     <button class="quick-tile" data-action="go-expenses"><span class="quick-icon">−</span><span><b>هزینه‌ها</b><small>ثبت مخارج</small></span></button>
@@ -646,7 +656,6 @@
       case 'gate-login-google':case 'cloud-login-google':cloudLogin('google');break;
       case 'gate-login-github':case 'cloud-login-github':cloudLogin('github');break;
       case 'gate-retry':retryAuthorization();break;
-      case 'gate-test-network':testAuthNetwork();break;
       case 'gate-signout':cloudLogout();break;
       case 'gate-copy-uid':{const copyUid=cloudUser?.uid||accessUid;if(copyUid)navigator.clipboard?.writeText(copyUid).then(()=>toast('شناسه کاربری کپی شد.')).catch(()=>toast('کپی شناسه انجام نشد.'));break;}
       case 'cloud-sync-now':syncWithCloud({startup:true});break;
@@ -695,35 +704,6 @@
   }
   function openWorkspaceSwitcher(){modal('انتخاب کسب‌وکار',`<div class="list">${data.workspaces.map(w=>`<div class="list-row"><div class="row-main"><b>${escapeHtml(w.name)}</b><div class="row-sub">${fmt(w.customers.length)} مشتری · ${fmt(w.invoices.length)} فاکتور</div></div>${w.id===data.activeWorkspaceId?badge('فعال','green-pill'):`<button class="btn secondary small-btn" data-action="activate-workspace" data-id="${w.id}">انتخاب</button>`}</div>`).join('')}</div><hr class="section-sep"><button class="btn full" data-action="add-workspace">＋ ساخت کسب‌وکار جدید</button>`);}
 
-  async function testAuthNetwork(){
-    const box=$('#gate-network-results');if(!box)return;box.textContent='در حال بررسی مسیرهای شبکه…';
-    const authHost=window.DH_FIREBASE_CONFIG?.authDomain;
-    const targets=[
-      ['Firebase Authentication','https://identitytoolkit.googleapis.com/'],
-      ['Firebase Token','https://securetoken.googleapis.com/'],
-      ['Google Accounts','https://accounts.google.com/'],
-      ['Google OAuth','https://oauth2.googleapis.com/'],
-      ['Google APIs','https://www.googleapis.com/'],
-      ['Firebase SDK','https://www.gstatic.com/'],
-      ['Cloud Firestore','https://firestore.googleapis.com/'],
-      ...(authHost? [
-        ['Firebase Auth Domain',`https://${authHost}/`],
-        ['Firebase Auth helper (iframe)',`https://${authHost}/__/auth/iframe`],
-        ['Firebase OAuth handler',`https://${authHost}/__/auth/handler`]
-      ]:[]),
-      ...(window.DH_FIREBASE_CONFIG?.projectId?[
-        ['Firebase Hosting جایگزین (web.app)',`https://${window.DH_FIREBASE_CONFIG.projectId}.web.app/`],
-        ['Auth helper جایگزین (web.app)',`https://${window.DH_FIREBASE_CONFIG.projectId}.web.app/__/auth/iframe`]
-      ]:[])
-    ];
-    const results=await Promise.all(targets.map(async([name,url])=>{
-      const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),6500);
-      try{await fetch(url,{method:'GET',mode:'no-cors',cache:'no-store',signal:controller.signal});return {name,ok:true};}
-      catch(_){return {name,ok:false};}finally{clearTimeout(timer);}
-    }));
-    if(!$('#gate-network-results'))return;
-    box.innerHTML=results.map(r=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #edf1ee"><span>${escapeHtml(r.name)}</span><b style="color:${r.ok?'#16834c':'#b84141'}">${r.ok?'قابل دسترسی':'عدم دسترسی'}</b></div>`).join('')+'<p>اگر دامنه Auth فعلی در دسترس نیست اما دامنه web.app قابل دسترسی است، می‌توان برنامه را روی Firebase Hosting منتشر کرد و پس از تنظیم دامنه و OAuth، authDomain را به web.app تغییر داد. این تغییر به‌تنهایی و بدون تنظیمات Firebase Console کافی نیست.</p><p>این آزمون فقط دسترسی شبکه را بررسی می‌کند و جایگزین تأیید ورود Firebase نیست.</p>';
-  }
   function cloudStatusText(){
     if(cloudStatus==='not-configured')return 'فضای ابری هنوز تنظیم نشده است. فایل تنظیمات Firebase باید تکمیل شود.';
     if(cloudStatus==='signed-out')return 'برای فعال شدن برنامه، با حساب گوگل یا GitHub وارد شوید.';
@@ -811,6 +791,7 @@
     }
   }
   async function cloudLogin(provider){
+    if(manualLoginInProgress)return;
     if(!window.DHCloud||!window.DHCloud.isConfigured()){showAccessGate('config');return;}
     manualLoginInProgress=true;
     try{
@@ -906,7 +887,7 @@
   function handleClick(event){
     const actionEl=event.target.closest('[data-action]');
     const actionName=actionEl?.dataset.action||'';
-    const gateActions=['gate-login-google','gate-login-github','gate-retry','gate-test-network','gate-signout','gate-copy-uid'];
+    const gateActions=['gate-login-google','gate-login-github','gate-retry','gate-signout','gate-copy-uid'];
     const insideProtectedUi=!!(event.target.closest('#app')||event.target.closest('#modal-root'));
     if(insideProtectedUi&&!gateActions.includes(actionName)&&!sessionAllowedForCurrentTab()){event.preventDefault();event.stopImmediatePropagation();return;}
     if(actionEl){const action=actionName;if(action==='activate-workspace'){data.activeWorkspaceId=actionEl.dataset.id;page='dashboard';closeModal();saveAndRender();return;}if(action==='edit-category'||action==='delete-category'){handleAction(action,actionEl);return;}handleAction(action,actionEl);return;}
@@ -930,7 +911,11 @@
   document.addEventListener('input',event=>{if((event.target.closest('#app')||event.target.closest('#modal-root'))&&!sessionAllowedForCurrentTab())return;handleInput(event);});
   document.addEventListener('change',event=>{if((event.target.closest('#app')||event.target.closest('#modal-root'))&&!sessionAllowedForCurrentTab())return;handleInput(event);});
   $('#back-page').addEventListener('click',()=>{if(sessionAllowedForCurrentTab())goBack();});
-  window.addEventListener('online',()=>{reconnectAndRevalidate();});
+  window.addEventListener('online',()=>{
+    reconnectAndRevalidate();
+    const gate=$('#access-gate'),msg=$('.access-gate-message',gate||document);
+    if(gate&&!gate.hidden&&msg){msg.textContent='اتصال شبکه تغییر کرده است. اگر VPN را روشن کرده‌اید، اکنون روی «تلاش دوباره با Google» بزنید؛ نیازی به Refresh نیست.';}
+  });
   window.addEventListener('focus',()=>{if(navigator.onLine&&accessUid)reconnectAndRevalidate();});
   window.addEventListener('pageshow',()=>{if(navigator.onLine&&accessUid)reconnectAndRevalidate();});
   document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&navigator.onLine&&accessUid)reconnectAndRevalidate();});
