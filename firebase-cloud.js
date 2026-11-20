@@ -29,11 +29,9 @@
     // initPromise فقط راه‌اندازی SDK را نگه می‌دارد؛ وضعیت کاربر باید در هر فراخوانی تازه خوانده شود.
     return {configured:true,user:userInfo(),authError:lastAuthError?{code:lastAuthError.code,message:lastAuthError.message}:null};
   }
-  async function signIn(providerName){
+  async function signIn(){
     await initialize();if(!auth)throw new Error('تنظیمات Firebase کامل نشده است.');
-    const m=modules;let provider;
-    if(providerName==='github'){provider=new m.GithubAuthProvider();provider.addScope('read:user');}
-    else provider=new m.GoogleAuthProvider();
+    const m=modules;const provider=new m.GoogleAuthProvider();
     // برای میزبانی خارج از Firebase، Popup از مشکلات دسترسی third-party storage در redirect جلوگیری می‌کند.
     // اگر مرورگر popup را مسدود کند، redirect به‌عنوان مسیر جایگزین استفاده می‌شود.
     try{const result=await m.signInWithPopup(auth,provider);current=result.user;lastAuthError=null;return result;}

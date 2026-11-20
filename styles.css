@@ -44,3 +44,67 @@
 .account-summary-email{font-size:12px;font-weight:700;color:var(--ink);overflow-wrap:anywhere;unicode-bidi:plaintext}
 .account-summary-text>small{font-size:10px;color:var(--muted)}
 .account-summary-uid{font-size:9px;color:var(--muted);border-top:1px solid var(--line);padding-top:7px;overflow-wrap:anywhere;text-align:left}
+
+/* بازطراحی خانه، طرف حساب‌ها، تراکنش‌ها و فیلترهای فهرست */
+.home-tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:5px;background:#eef4f0;border-radius:14px;margin:10px 0 13px}
+.home-tabs button{border:0;background:transparent;color:#65766d;border-radius:10px;padding:10px 8px;font-weight:800;font-size:12px}
+.home-tabs button.active{background:#fff;color:var(--green);box-shadow:0 2px 8px #173e3012}
+.account-status-card{border-color:#dcebe2;background:linear-gradient(145deg,#fff,#f7fbf8)}
+.account-status-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+.account-status-value{display:flex;flex-direction:column;align-items:flex-end;gap:2px;font-size:11px;font-weight:800;white-space:nowrap}
+.account-status-value>b{font-size:19px;direction:ltr}
+.account-status-value.green{color:var(--green-2)}.account-status-value.red{color:var(--red)}
+.filter-block{padding:10px 0;border-bottom:1px solid var(--line);margin-bottom:7px;font-size:11px}
+.filter-block>b{display:block;margin-bottom:9px}
+.check-filter-grid{display:flex;flex-wrap:wrap;gap:8px 15px}
+.check-filter-grid label{display:flex;align-items:center;gap:6px;color:#596a61;font-size:11px;cursor:pointer}
+.check-filter-grid input{accent-color:var(--green);width:16px;height:16px}
+.filter-line{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:9px 0;font-size:11px}
+.filter-line>label{color:var(--muted);font-weight:700;flex-shrink:0}
+.sort-select{max-width:190px;min-width:125px;min-height:38px;border:1px solid #dce5df;border-radius:10px;padding:6px 9px;background:#fff;color:var(--ink);font-size:11px}
+.date-range-fields{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:9px 0}
+.date-range-fields .date-picker-btn{min-width:39px;padding:6px}
+.list-count{font-size:10px;color:var(--muted);margin:9px 0 3px}
+.counterparty-row{width:100%;display:flex;align-items:center;gap:10px;padding:13px 2px;border:0;border-bottom:1px solid #edf1ee;background:#fff;text-align:right;color:var(--ink)}
+.counterparty-main{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}
+.counterparty-main>b{font-size:12px;overflow-wrap:anywhere}
+.counterparty-main>small,.counterparty-balance>small{font-size:10px;color:var(--muted)}
+.counterparty-balance{display:flex;flex-direction:column;align-items:flex-end;gap:3px;white-space:nowrap}
+.counterparty-balance>b{direction:ltr;font-size:12px}
+.counterparty-balance.green>b,.counterparty-balance.green>small{color:var(--green-2)}
+.counterparty-balance.red>b,.counterparty-balance.red>small{color:var(--red)}
+.counterparty-arrow{font-size:22px;color:#9aa79f;padding-right:3px}
+.transaction-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #edf1ee}
+.transaction-main{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}
+.transaction-main>b{font-size:12px;overflow-wrap:anywhere}
+.transaction-main>small,.transaction-end>small{font-size:10px;color:var(--muted)}
+.transaction-end{display:flex;flex-direction:column;align-items:flex-end;gap:3px;white-space:nowrap}
+.transaction-end .actions{gap:4px}
+.invoice-sales-total{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px;margin:12px 0;background:#f2f8f4;border:1px solid #dcebe2;border-radius:12px;font-size:11px}
+.invoice-sales-total>b{font-size:16px;color:var(--green);direction:ltr}
+.payment-invoice-list{display:flex;flex-direction:column;gap:7px;margin-top:9px}
+.invoice-allocation-item{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:11px;padding:10px;cursor:pointer}
+.invoice-allocation-item input{width:17px;height:17px;accent-color:var(--green);flex:0 0 auto}
+.invoice-allocation-text{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}
+.invoice-allocation-text>b{font-size:11px}
+.invoice-allocation-text>small,.invoice-allocation-state{font-size:10px;color:var(--muted)}
+.invoice-allocation-state{text-align:left}
+.invoice-allocation-item.allocation-full{background:#eff9f2;border-color:#a8d6b7}
+.invoice-allocation-item.allocation-full .invoice-allocation-state{color:#1b8050;font-weight:800}
+.invoice-allocation-item.allocation-partial{background:#fff1f1;border-color:#e7a7a7}
+.invoice-allocation-item.allocation-partial .invoice-allocation-state{color:#c43d3d;font-weight:800}
+.invoice-allocation-item.allocation-disabled{opacity:.48;cursor:not-allowed}
+.pricing-unit-note{display:flex;flex-direction:column;gap:5px;background:#f4f8f5;padding:10px;border-radius:11px;font-size:11px}
+.pricing-unit-note>b{color:var(--green);font-size:13px}
+#base-cost-preview,#base-sale-preview{display:block;background:#f5f8f6;border:1px solid var(--line);border-radius:9px;padding:9px;font-weight:800;direction:ltr;text-align:right;color:var(--green)}
+.settings-image-preview{display:block;max-width:180px;max-height:105px;object-fit:contain;border:1px solid var(--line);border-radius:10px;padding:5px;margin-top:8px;background:#fff}
+.invoice-print-head{display:flex;align-items:center;gap:15px;margin-bottom:15px}
+.invoice-print-footer{display:flex;justify-content:space-between;align-items:flex-end;gap:14px;margin-top:28px;padding-top:12px;border-top:1px solid #ddd}
+.invoice-sign-area{min-width:140px;max-width:45%;text-align:center}
+.setup-reminder{margin-top:10px}
+@media(max-width:430px){.account-status-head{align-items:flex-start}.account-status-value>b{font-size:16px}.date-range-fields{grid-template-columns:1fr}.filter-line{align-items:flex-start}.sort-select{max-width:58%;min-width:112px}.transaction-row{gap:8px}.transaction-end .actions{flex-direction:column;align-items:flex-end}.invoice-allocation-state{max-width:84px}}
+.account-status-breakdown{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:5px 0 10px}
+.account-status-breakdown>div{display:flex;flex-direction:column;gap:4px;padding:9px;border-radius:10px;background:#f5f8f6;font-size:10px}
+.account-status-breakdown>div>b{font-size:12px;direction:ltr}
+.account-status-breakdown .green{color:var(--green-2)}.account-status-breakdown .red{color:var(--red)}
+@media(max-width:380px){.account-status-breakdown{grid-template-columns:1fr}}
